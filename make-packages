@@ -1,0 +1,56 @@
+#!/bin/sh
+
+TMPDIR_ROOT=/home/tobi/tmp
+DEB_BUILD_OPTIONS=""
+DEBEMAIL="tn@movb.de"
+DEBFULLNAME="Tobias M.-Nissen"
+
+while getopts "nh" OPTS; do
+    case $OPTS in
+        n) DEB_BUILD_OPTIONS="nocheck"
+           ;;
+        h) echo "usage: make-packages [-n]"
+           echo
+           echo "  -n      Do not run tests"
+           exit
+           ;;
+    esac
+done
+
+curdir=$PWD
+tmpdir=$(mktemp --directory --tmpdir=$TMPDIR_ROOT)
+
+# create clean project copy in temporary directory
+echo Executing "git archive master | tar -x -C $tmpdir"...
+git archive master | tar -x -C $tmpdir
+
+# the rest happens in the temporary directory
+echo "chdir()ing to $tmpdir"
+cd $tmpdir
+
+# build CPAN distribution
+dzilcmd="dzil build"
+echo Executing $dzilcmd...
+$dzilcmd
+
+# build Debian package
+export DEB_BUILD_OPTIONS
+export DEBEMAIL
+export DEBFULLNAME
+dhmpcmd="dh-make-perl --build replaygainer-*"
+echo Executing $dhmpcmd...
+$dhmpcmd
+
+# chdir() back to "current" directory
+cd $curdir
+
+# move packages to $curdir
+mv $tmpdir/*.deb .
+mv $tmpdir/*.tar.gz .
+
+# maybe delete tmpdir
+read -p "Delete temporary directory? " yn
+case $yn in
+    [Yy]* ) rm -rf $tmpdir
+esac
+
