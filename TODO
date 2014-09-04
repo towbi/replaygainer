@@ -1,0 +1,9 @@
+# TODO
+
+* write job system that uses mp3gain, vorbisgain, metaflac, ... to tag all the
+different formats
+
+* automate package building process to create correct dependencies for mp3gain,
+vorbisgain, metaflac, ...
+
+
