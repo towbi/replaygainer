@@ -49,7 +49,7 @@ around BUILDARGS => sub {
 
         return $param->{$tag} if $occurences == 1;
 
-        die "Could not extract exactly 1 value with key '$tag' because $occurences occurences were found.\n";
+        die "Could not extract exactly one value with key '$tag' because $occurences occurences were found.\n";
     }
 
     return $class->$orig(

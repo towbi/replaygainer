@@ -11,7 +11,8 @@ use DBI;
 
 use Replaygainer;
 use Replaygainer::AudioFileInfo;
-use Replaygainer::Worker;
+use Replaygainer::Dirs;
+use Replaygainer::DirWithState;
 
 use Getopt::Long;
 use Cwd;
@@ -21,14 +22,26 @@ use Term::ReadKey;
 my $name = 'replaygainer';
 my $version = '0.0.1';
 
-# actions in interactive mode
 use constant {
-    LIST => 1,
-    ASK  => 2,
-    QUIT => 3,
+    # actions
+    LIST_CMD => 1,
+    ASK_CMD  => 2,
+    QUIT_CMD => 3,
+
+    # state variables used in interactive loop
+    QUIT             => 4,
+    CONTINUE         => 5,
+
+    # state variables used to keep track while replaygain processing
+    ADD_ALBUM_GAIN   => 6,
+    ADD_TRACK_GAIN   => 7,
+    ALBUM_GAIN_ADDED => 8,
+    TRACK_GAIN_ADDED => 9,
 };
 
+#
 # command line parameters
+#
 
 my $dir = getcwd();
 my $verbose;
@@ -36,18 +49,20 @@ my $help;
 my $list;
 my $interactive;
 my $add_album_gain;
-my $add_file_gain;
+my $add_track_gain;
 
+#
 # parse and check yommand line arguments
+#
 
 GetOptions(
-  "dir=s"            => \$dir,
-  "verbose"          => \$verbose,
-  "help"             => \$help,
-  "list"             => \$list,
-  "interactive"      => \$interactive,
-  "add-album-gain"   => \$add_album_gain,
-  "f|add-file-gain"  => \$add_file_gain,
+  "dir=s"             => \$dir,
+  "verbose"           => \$verbose,
+  "help"              => \$help,
+  "list"              => \$list,
+  "interactive"       => \$interactive,
+  "add-album-gain"    => \$add_album_gain,
+  "t|add-track-gain"  => \$add_track_gain,
 ) or print_help_and_exit(
     EINVAL,
     "Usage error: Error in command line arguments.\n"
@@ -55,21 +70,23 @@ GetOptions(
 
 print_help_and_exit() if $help;
 
-if ($interactive and ($add_album_gain or $add_file_gain)) {
+if ($interactive and ($add_album_gain or $add_track_gain)) {
     print_help_and_exit(
         EINVAL,
-        "Usage error: You can not request interactive mode and use --add-(album|file)-gain at the same time.\n"
+        "Usage error: You can not request interactive mode and use --add-(album|track)-gain at the same time.\n"
     );
 }
 
-if ($add_album_gain and $add_file_gain) {
+if ($add_album_gain and $add_track_gain) {
     print_help_and_exit(
         EINVAL,
-        "Usage error: You can only use either --add-album-gain or --add-file-gain, not both.\n"
+        "Usage error: You can only use either --add-album-gain or --add-track-gain, not both.\n"
     );
 }
 
+#
 # main
+#
 
 my $exif_tool = new Image::ExifTool({Duplicates => 1});
 
@@ -77,53 +94,25 @@ my $total = 0;
 my $total_touched = 0;
 my $total_touched_audio = 0;
 
-my @dirs_without_rg;
-
-{
-    my $done_dirs = {};
-
-    sub scanfile {
-        $total++;
-        if (-f $_ and not defined $done_dirs->{$File::Find::dir}) {
-            $total_touched++;
-            my $info = $exif_tool->ImageInfo($_);
-
-            try {
-                my $foo = new Replaygainer::AudioFileInfo({
-                    %$info,
-                    dir  => $File::Find::dir,
-                    file => $_,
-                });
-                $total_touched_audio++;
-                unless ($foo->has_replaygain_track_gain()) {
-                    push @dirs_without_rg, $File::Find::dir;
-                    print $foo->full_path() . " has no replaygain info.\n" if $verbose;
-                    $done_dirs->{$File::Find::dir} = 1;
-                }
-            }
-            catch {
-                ;
-            }
-
-        }
-    }
-}
+my $dirs_without_rg = Replaygainer::Dirs->new();
 
 print "Scanning $dir for albums with missing replaygain information...\n";
 
-find(\&scanfile, ".");
+find(sub { scanfile($dirs_without_rg) }, ".");
 
 print "\nScanned $total files total ($total_touched files touched, $total_touched_audio of those were audio files)\n" if $verbose;
 
-my $num_dirs_without_rg = @dirs_without_rg;
+my $num_dirs_without_rg = keys %{$dirs_without_rg->dirs};
 
 print "\nFound $num_dirs_without_rg directories with files missing replaygain information.\n\n";
 
 if (not $interactive) {
-    list() if $list;
+    list_cmd() if $list;
 }
 else {
-    while (1) {
+    my $continue = CONTINUE;
+
+    while ($continue == CONTINUE) {
         print<<EOT;
 What do you want to do next? Your options:
 
@@ -134,17 +123,18 @@ What do you want to do next? Your options:
 
 EOT
 
-        perform_action(read_action());
+        $continue = perform_action(read_action(), $dirs_without_rg);
     }
 }
 
-
+#
 # subroutines
+#
 
 sub valid_action {
     my $action = shift;
 
-    return scalar grep /$action/, (LIST, ASK, QUIT);
+    return scalar grep /$action/, (LIST_CMD, ASK_CMD, QUIT_CMD);
 }
 
 sub read_action {
@@ -162,17 +152,57 @@ sub read_action {
 
 sub perform_action {
     my $action = shift;
+    my $dirs_without_rg = shift;
 
-    list() if $action eq LIST;
-    print "Bye...\n\n" and exit() if $action eq QUIT;
+    return list_cmd($dirs_without_rg) if $action eq LIST_CMD;
+    return quit_cmd() if $action eq QUIT_CMD;
     #list() if $action eq LIST;
 }
 
-sub list {
-    foreach my $dir (@dirs_without_rg) {
+sub quit_cmd {
+    print "Bye...\n\n";
+    return QUIT;
+}
+
+sub list_cmd {
+    my $dirs_without_rg = shift;
+
+    foreach my $dir (keys %{$dirs_without_rg->dirs}) {
         print "$dir\n";
     }
     print "\n";
+    return CONTINUE;
+}
+
+sub ask_cmd {
+    return QUIT;
+}
+
+sub scanfile {
+    my $dirs_without_rg = shift;
+
+    $total++;
+    if (-f $_ and not $dirs_without_rg->path_known($File::Find::dir)) {
+        $total_touched++;
+        my $info = $exif_tool->ImageInfo($_);
+
+        try {
+            my $foo = new Replaygainer::AudioFileInfo({
+                %$info,
+                dir  => $File::Find::dir,
+                file => $_,
+            });
+            $total_touched_audio++;
+            unless ($foo->has_replaygain_track_gain()) {
+                $dirs_without_rg->add(Replaygainer::DirWithState->new({ path=> $File::Find::dir }));
+                print $foo->full_path() . " has no replaygain info.\n" if $verbose;
+            }
+        }
+        catch {
+            ;
+        }
+
+    }
 }
 
 sub print_help_and_exit {
@@ -187,9 +217,9 @@ $name (v$version) -- A tool to find music albums missing replaygain
   -i, --interactive          Interactive mode: asks for each album missing
                               replaygain information whether to additionally
                               add album gain
-  -f, --add-file-gain        Adds file gain (only) to all albums missing
+  -t, --add-track-gain       Adds track gain (only) to all albums missing
                               replaygain information
-  -a, --add-album-gain       Adds file gain and album gain to all albums
+  -a, --add-album-gain       Adds track gain and album gain to all albums
                               missing replaygain information
   -v, --verbose              Display verbose information
   -h, --help                 Display this help
