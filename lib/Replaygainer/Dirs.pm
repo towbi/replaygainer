@@ -17,6 +17,12 @@ around BUILDARGS => sub {
     return $class->$orig( dirs => {} );
 };
 
+sub get_fresh_dirs {
+    my $self = shift;
+    
+    return grep {!$_->can_be_processed} values %{$self->dirs};
+}
+
 sub get_processable_dirs {
     my $self = shift;
 

@@ -16,11 +16,11 @@ use Replaygainer::DirWithState;
 
 use Getopt::Long;
 use Cwd;
-use Errno qw(EINVAL :POSIX);
+use Errno qw(EINVAL ENOENT :POSIX);
 use Term::ReadKey;
 
 my $name = 'replaygainer';
-my $version = '0.0.1';
+my $version = $Replaygainer::VERSION;
 
 use constant {
     # actions
@@ -29,14 +29,8 @@ use constant {
     QUIT_CMD => 3,
 
     # state variables used in interactive loop
-    QUIT             => 4,
-    CONTINUE         => 5,
-
-    # state variables used to keep track while replaygain processing
-    ADD_ALBUM_GAIN   => 6,
-    ADD_TRACK_GAIN   => 7,
-    ALBUM_GAIN_ADDED => 8,
-    TRACK_GAIN_ADDED => 9,
+    QUIT     => 4,
+    CONTINUE => 5,
 };
 
 #
@@ -69,6 +63,11 @@ GetOptions(
 );
 
 print_help_and_exit() if $help;
+
+if (not -d $dir) {
+    print "Invalid directory '$dir', can not continue.\n";
+    exit ENOENT;
+}
 
 if ($interactive and ($add_album_gain or $add_track_gain)) {
     print_help_and_exit(
@@ -140,13 +139,13 @@ sub valid_action {
 sub read_action {
     my $key;
     my $errs = 0;
-    ReadMode 4;
+    ReadMode(3);
     while ($key = ReadKey(0) and not valid_action($key)) {
         print "\n" if $key eq "\n" and next;
         print "Invalid action '$key'\n";
         if ($errs++ > 5) { die "\nm(\n"; }
     }
-    ReadMode 0;
+    ReadMode(0);
     return $key;
 }
 
@@ -156,7 +155,10 @@ sub perform_action {
 
     return list_cmd($dirs_without_rg) if $action eq LIST_CMD;
     return quit_cmd() if $action eq QUIT_CMD;
-    #list() if $action eq LIST;
+    return ask_cmd($dirs_without_rg) if $action eq ASK_CMD;
+
+    # quit if nothing matches
+    return QUIT;
 }
 
 sub quit_cmd {
@@ -175,6 +177,30 @@ sub list_cmd {
 }
 
 sub ask_cmd {
+    my $dirs_without_rg = shift;
+
+    sub query_user {
+        my $dir = shift;
+        print $dir->path . " [a]lbum or [t]rack gain? ";
+        my $key;
+        ReadMode(3);
+        while ($key = ReadKey(0) and not ($key eq 'a' or $key eq 't')) {}
+        ReadMode(0);
+        if ($key eq 'a') {
+            print "album\n";
+            return 'album';
+        }
+        elsif ($key eq 't') {
+            print "track\n";
+            return 'track';
+        }
+    }
+
+    foreach my $dir ($dirs_without_rg->get_fresh_dirs) {
+        my $gain_mode = query_user($dir);
+        $dir->gain_mode($gain_mode);
+    }
+    
     return QUIT;
 }
 
@@ -194,14 +220,13 @@ sub scanfile {
             });
             $total_touched_audio++;
             unless ($foo->has_replaygain_track_gain()) {
-                $dirs_without_rg->add(Replaygainer::DirWithState->new({ path=> $File::Find::dir }));
+                $dirs_without_rg->add(Replaygainer::DirWithState->new({ path => $File::Find::dir }));
                 print $foo->full_path() . " has no replaygain info.\n" if $verbose;
             }
         }
         catch {
             ;
         }
-
     }
 }
 
@@ -226,9 +251,9 @@ $name (v$version) -- A tool to find music albums missing replaygain
 
 EOT
 
-    warn $msg if $msg;
+    warn $msg if defined $msg;
 
-    exit $errno;
+    exit defined $errno ? $errno : 0;
 
 }
 
