@@ -54,8 +54,10 @@ around BUILDARGS => sub {
 
     return $class->$orig(
         mimetype => extract_one($Replaygainer::EXIFTOOL_TAGS->{MIMETYPE}, $param),
-        user_defined_text => extract_arrayref($Replaygainer::EXIFTOOL_TAGS->{USER_DEFINED_TEXT}, $param),
-        replaygain_track_gain => extract_arrayref($Replaygainer::EXIFTOOL_TAGS->{REPLAYGAIN_TRACK_GAIN}, $param),
+        user_defined_text => extract_arrayref(
+            $Replaygainer::EXIFTOOL_TAGS->{USER_DEFINED_TEXT}, $param),
+        replaygain_track_gain => extract_arrayref(
+            $Replaygainer::EXIFTOOL_TAGS->{REPLAYGAIN_TRACK_GAIN}, $param),
         dir => $param->{dir},
         file => $param->{file},
 
