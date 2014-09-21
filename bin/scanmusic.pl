@@ -13,11 +13,14 @@ use Replaygainer;
 use Replaygainer::AudioFileInfo;
 use Replaygainer::Dirs;
 use Replaygainer::DirWithState;
+use Replaygainer::Worker;
 
 use Getopt::Long;
 use Cwd;
 use Errno qw(EINVAL ENOENT :POSIX);
 use Term::ReadKey;
+use AnyEvent;
+use Module::Find qw(usesub);
 
 my $name = 'replaygainer';
 my $version = $Replaygainer::VERSION;
@@ -89,6 +92,7 @@ if ($add_album_gain and $add_track_gain) {
 
 my $exif_tool = new Image::ExifTool({Duplicates => 1});
 
+# next three are global vars that are being updated in scanfile()
 my $total = 0;
 my $total_touched = 0;
 my $total_touched_audio = 0;
@@ -104,6 +108,10 @@ print "\nScanned $total files total ($total_touched files touched, $total_touche
 my $num_dirs_without_rg = keys %{$dirs_without_rg->dirs};
 
 print "\nFound $num_dirs_without_rg directories with files missing replaygain information.\n\n";
+
+my @found = usesub Replaygainer::Worker;
+
+foreach my $plugin (@found) { print $plugin . "\n"; }
 
 if (not $interactive) {
     list_cmd() if $list;
@@ -126,6 +134,7 @@ EOT
     }
 }
 
+
 #
 # subroutines
 #
@@ -133,7 +142,9 @@ EOT
 sub valid_action {
     my $action = shift;
 
-    return scalar grep /$action/, (LIST_CMD, ASK_CMD, QUIT_CMD);
+    return scalar grep /$action/, (LIST_CMD, ASK_CMD, QUIT_CMD)
+        if ord($action) >= 32 and ord($action) <= 126;
+    return 0;
 }
 
 sub read_action {
@@ -173,35 +184,76 @@ sub list_cmd {
         print "$dir\n";
     }
     print "\n";
+
     return CONTINUE;
 }
 
-sub ask_cmd {
-    my $dirs_without_rg = shift;
+{
+    my $w = AnyEvent->condvar;
+    my $work_monitor_started = 0;
 
-    sub query_user {
-        my $dir = shift;
-        print $dir->path . " [a]lbum or [t]rack gain? ";
-        my $key;
-        ReadMode(3);
-        while ($key = ReadKey(0) and not ($key eq 'a' or $key eq 't')) {}
-        ReadMode(0);
-        if ($key eq 'a') {
-            print "album\n";
-            return 'album';
+    sub run_next_job {
+        my $dirs_without_rg = shift;
+
+        $dirs_without_rg->get_processable_dir
+    }
+
+    sub maybe_start_work_monitor {
+        if (not $work_monitor_started) {
+            my $pid = fork();
+            
+            if (not defined $pid) {
+                die "Unable to fork().\n";
+            }
+            elsif ($pid == 0) {
+                print "Monitor working in background ...\n";
+                sleep 2;
+                exit 0;
+            }
+            else {
+                print "Started background processing ...\n";
+                $work_monitor_started = 1;
+                my $w = AnyEvent->child(pid => $pid, cb => sub {
+                    my ($pid, $status) = @_;
+                    print "CHILD EXITED :-)\n";
+                });
+            }
         }
-        elsif ($key eq 't') {
-            print "track\n";
-            return 'track';
+        else {
+            print "Monitor already started, nothing to do.\n";
         }
     }
 
-    foreach my $dir ($dirs_without_rg->get_fresh_dirs) {
-        my $gain_mode = query_user($dir);
-        $dir->gain_mode($gain_mode);
+    sub ask_cmd {
+        my $dirs_without_rg = shift;
+
+        sub query_user {
+            my $dir = shift;
+
+            print $dir->path . " [a]lbum or [t]rack gain? ";
+
+            my $key;
+            ReadMode(3);
+            while ($key = ReadKey(0) and not ($key eq 'a' or $key eq 't')) {}
+            ReadMode(0);
+
+            if ($key eq 'a') {
+                print "album\n";
+                return 'album';
+            }
+            elsif ($key eq 't') {
+                print "track\n";
+                return 'track';
+            }
+        }
+
+        foreach my $dir ($dirs_without_rg->get_fresh_dirs) {
+            my $gain_mode = query_user($dir);
+            $dir->gain_mode($gain_mode);
+        }
+        
+        return QUIT;
     }
-    
-    return QUIT;
 }
 
 sub scanfile {
@@ -218,10 +270,17 @@ sub scanfile {
                 dir  => $File::Find::dir,
                 file => $_,
             });
+
             $total_touched_audio++;
+
             unless ($foo->has_replaygain_track_gain()) {
-                $dirs_without_rg->add(Replaygainer::DirWithState->new({ path => $File::Find::dir }));
+            
+                $dirs_without_rg->add(Replaygainer::DirWithState->new({
+                    path     => $File::Find::dir,
+                    mimetype => $foo->mimetype,
+                }));
                 print $foo->full_path() . " has no replaygain info.\n" if $verbose;
+                maybe_start_work_monitor();
             }
         }
         catch {
