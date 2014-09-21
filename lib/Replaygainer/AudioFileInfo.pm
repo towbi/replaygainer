@@ -4,15 +4,14 @@ use Modern::Perl;
 use namespace::autoclean;
 
 use Moose;
-use MooseX::Types::Path::Class qw(Dir File);
 
 use Replaygainer;
 use Replaygainer::Util qw(zip2);
 use Data::Dumper qw(Dumper);
 
 has 'mimetype'              => (is => 'ro', isa => 'Str',  required => 1);
-has 'dir'                   => (is => 'ro', isa => 'Path::Class::Dir',  required => 1, coerce => 1);
-has 'file'                  => (is => 'ro', isa => 'Path::Class::File', required => 1, coerce => 1);
+has 'dir'                   => (is => 'ro', isa => 'Str',  required => 1);
+has 'file'                  => (is => 'ro', isa => 'Str', required => 1);
 has 'user_defined_text'     => (is => 'ro', isa => 'ArrayRef[Str]');
 has 'replaygain_track_gain' => (is => 'ro', isa => 'ArrayRef[Str]');
 

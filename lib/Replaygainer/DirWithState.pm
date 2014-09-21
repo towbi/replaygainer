@@ -5,11 +5,10 @@ use namespace::autoclean;
 
 use Moose;
 use Moose::Util::TypeConstraints;
-use MooseX::Types::Path::Class qw(Dir File);
 
 enum GainModes => [qw(album track)];
 
-has path       => (is => 'ro', isa => 'Path::Class::Dir', required => 1, coerce => 1);
+has path       => (is => 'ro', isa => 'Str', required => 1);
 has gain_mode  => (is => 'rw', isa => 'GainModes');
 has processing => (is => 'rw', isa => 'Bool');
 has processed  => (is => 'rw', isa => 'Bool');
